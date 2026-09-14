@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Yumi's 瞬発スピーキング v2</title>
+<style>
+:root{font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Yu Gothic",sans-serif}
+body{max-width:760px;margin:auto;padding:18px;background:#fafafa;color:#222}
+.card{background:#fff;border-radius:18px;padding:20px;margin:14px 0;box-shadow:0 2px 12px #0001}
+h1{font-size:25px;margin:5px 0}.muted{color:#777}.jp{font-size:21px;font-weight:700;margin:18px 0}
+button,select{border:0;border-radius:12px;padding:11px 15px;font-size:16px;margin:4px}
+button{background:#222;color:#fff;cursor:pointer}.secondary{background:#eee;color:#222}.danger{background:#963b3b}
+#timer{font-size:48px;font-weight:800;text-align:center;margin:12px}
+#transcript{min-height:72px;border:1px solid #ddd;border-radius:12px;padding:12px;background:#fcfcfc}
+textarea{width:100%;box-sizing:border-box;min-height:80px;border:1px solid #ddd;border-radius:12px;padding:10px;font-size:16px}
+.qnav span{display:inline-block;padding:5px 9px;border-radius:9px;background:#eee;margin:3px}.qnav .now{background:#222;color:#fff}
+pre{white-space:pre-wrap;font-family:inherit}
+.time{font-weight:700}
+</style>
+</head>
+<body>
+<h1>🎙️ Yumi's 瞬発スピーキング v2</h1>
+<p class="muted">事実＋自分の気持ち｜30秒 × 5問</p>
+
+<div class="card">
+<label>Day：
+<select id="daySelect"></select>
+</label>
+<div class="qnav" id="qnav"></div>
+<div class="jp" id="prompt"></div>
+<div id="timer">30</div>
+<div style="text-align:center">
+<button id="start">🎙️ 話し始める</button>
+<button id="stop" class="secondary" disabled>停止</button>
+</div>
+<p class="muted">音声認識結果</p>
+<div id="transcript">まだありません</div>
+<p><b>実際に自分が言った英語</b> <span class="muted">（認識ミスだけ直してOK）</span></p>
+<textarea id="manual" placeholder="音声認識が変だったときだけ修正"></textarea>
+<p>回答タイム：<span id="answerTime" class="time">—</span></p>
+<div style="text-align:center"><button id="save">この問題を保存 →</button></div>
+</div>
+
+<div class="card">
+<h2>今日の結果</h2>
+<div id="result" class="muted">5問終わると、採点プロンプト付きで表示します。</div>
+<button id="copy" class="secondary">採点用テキストをコピー</button>
+</div>
+
+<div class="card">
+<h2>📚 履歴</h2>
+<div id="history" class="muted">まだありません。</div>
+<button id="clear" class="danger">履歴を消去</button>
+</div>
+
+<script>
+const days=[
+["毎日の習慣",["私は毎朝コーヒーを飲みます。","私の仕事は9時に始まります。","私は夜に英語を勉強します。","私は週に3回散歩します。","私は普段、夜遅く寝ます。"]],
+["昨日したこと",["昨日、友達とランチに行きました。","昨日の夜、家で夕食を食べました。","昨日、スーパーへ買い物に行きました。","昨日、30分英語を勉強しました。","昨日は少し疲れていました。"]],
+["週末にしたこと",["週末にカフェへ行きました。","週末に家族と買い物をしました。","週末に新しい料理を作りました。","週末に英語を勉強しました。","週末は家でゆっくりしました。"]],
+["最近の生活",["今日は少し疲れています。","今週は仕事が忙しいです。","最近、新しい英語表現を勉強しています。","最近、いつもより早く起きています。","今日は天気がとてもいいです。"]],
+["これからの予定",["今週末は家で過ごす予定です。","近いうちに友達に会う予定です。","明日は英語を勉強するつもりです。","次の休みに買い物へ行きたいです。","来年、旅行へ行く予定です。"]],
+["英語学習",["私は英語を勉強しています。","最近、英語のスピーキングを練習しています。","リスニングは少し難しいです。","毎日少しずつ英語に触れています。","もっと自然に英語を話せるようになりたいです。"]],
+["Final Check",["最近、英語を話す練習を続けています。","以前より英語が聞き取れることがあります。","まだ言いたいことがすぐ出ないことがあります。","英語の勉強は楽しいです。","これからも英語の練習を続けたいです。"]]
+];
+
+let day=3,q=0,answers=Array(5).fill(null),rec=null,timer=null,left=30,lastOutput="";
+let startedAt=null, elapsed=0;
+const $=x=>document.getElementById(x);
+
+days.forEach((d,i)=>$("daySelect").innerHTML+=`<option value="${i}">Day ${i+1}｜${d[0]}</option>`);
+$("daySelect").value=day;
+
+function fmt(sec){ return `${sec}秒`; }
+
+function render(){
+ $("prompt").textContent=days[day][1][q];
+ $("qnav").innerHTML=answers.map((a,i)=>`<span class="${i===q?'now':''}">${i+1}${a?' ✓':''}</span>`).join("");
+ $("timer").textContent=left;
+ $("transcript").textContent=answers[q]?.stt||"まだありません";
+ $("manual").value=answers[q]?.manual||"";
+ $("answerTime").textContent=answers[q]?.time ? fmt(answers[q].time) : "—";
+}
+
+function stop(){
+ if(timer){ clearInterval(timer); timer=null; }
+ if(startedAt){
+   elapsed = Math.min(30, Math.max(1, Math.round((Date.now()-startedAt)/1000)));
+   startedAt=null;
+   answers[q]={...(answers[q]||{}),time:elapsed};
+   $("answerTime").textContent=fmt(elapsed);
+ }
+ if(rec){try{rec.stop()}catch(e){}}
+ $("start").disabled=false;$("stop").disabled=true;
+}
+
+function start(){
+ stop();
+ left=30; elapsed=0; startedAt=Date.now();
+ answers[q]={stt:"",manual:"",time:null};
+ render();
+
+ const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+ if(!SR){
+   $("transcript").textContent="⚠️ このブラウザではWeb Speech APIが使えません。";
+   startedAt=null;
+   return;
+ }
+ rec=new SR(); rec.lang="en-US"; rec.continuous=true; rec.interimResults=true;
+ let finalText="";
+ rec.onresult=e=>{
+   let interim="";
+   for(let i=e.resultIndex;i<e.results.length;i++){
+     let t=e.results[i][0].transcript;
+     if(e.results[i].isFinal) finalText+=t+" "; else interim+=t;
+   }
+   answers[q].stt=(finalText+interim).trim();
+   $("transcript").textContent=answers[q].stt||"聞き取り中…";
+ };
+ rec.onerror=e=>{$("transcript").textContent="⚠️ 音声認識エラー："+e.error};
+ try{rec.start()}catch(e){}
+ $("start").disabled=true;$("stop").disabled=false;
+
+ timer=setInterval(()=>{
+   left--;
+   $("timer").textContent=left;
+   if(left<=0) stop();
+ },1000);
+}
+
+$("start").onclick=start;
+$("stop").onclick=stop;
+$("daySelect").onchange=e=>{
+ stop(); day=+e.target.value; q=0; answers=Array(5).fill(null); left=30; render();
+};
+
+$("save").onclick=()=>{
+ stop();
+ let a=answers[q]||{stt:"",manual:"",time:null};
+ a.manual=$("manual").value.trim();
+ if(!a.time) a.time=elapsed||30;
+ answers[q]=a;
+ if(q<4){q++;left=30;render()}else finish();
+};
+
+function finish(){
+ const total=answers.reduce((s,a)=>s+(a?.time||0),0);
+
+ const header=`以下は、英語初心者が「日本語の事実を英語で言い、自分の気持ち・感想・理由をもう1文足す」スピーキング練習をした結果です。
+
+【添削と採点のお願い】
+各回答を20点満点、合計100点満点で採点してください。
+次の4項目を各5点で評価してください。
+1. 日本語の事実を英語で伝えられているか
+2. 自分の気持ち・感想・理由を2文目に加えられているか
+3. 文法が正しいか
+4. 英語初心者にも使いやすい、簡単で自然な表現になっているか
+
+各問について、次の順番で日本語でフィードバックしてください。
+・得点（20点満点）と4項目の内訳
+・良かったところ
+・文法や表現の修正点
+・本人の意図を変えない、簡単で自然な修正版2文
+・修正理由を初心者向けに短く説明
+文字起こしの句読点や大文字・小文字の誤りだけで、大きく減点しないでください。
+最後に合計点、全体の良かったところ、次回意識するポイントを1つ教えてください。
+
+【練習結果】
+DAY ${day+1}：${days[day][0]}
+5問の合計回答タイム：${total}秒`;
+
+ const body=answers.map((a,i)=>`
+■ 問題${i+1}
+日本語：${days[day][1][i]}
+文字起こし：${a?.manual||a?.stt||"(回答なし)"}
+回答タイム：${a?.time||0}秒`).join("\n");
+
+ lastOutput=header+"\n"+body;
+ $("result").innerHTML=`<pre>${lastOutput.replaceAll("&","&amp;").replaceAll("<","&lt;")}</pre>`;
+
+ let h=JSON.parse(localStorage.getItem("yumiSpeechHistoryV2")||"[]");
+ h.unshift({date:new Date().toLocaleString("ja-JP"),day:day+1,title:days[day][0],total,output:lastOutput});
+ localStorage.setItem("yumiSpeechHistoryV2",JSON.stringify(h.slice(0,30)));
+ history();
+}
+
+$("copy").onclick=async()=>{
+ if(lastOutput){
+   await navigator.clipboard.writeText(lastOutput);
+   $("copy").textContent="コピーしました ✓";
+   setTimeout(()=>$("copy").textContent="採点用テキストをコピー",1500);
+ }
+};
+
+function history(){
+ let h=JSON.parse(localStorage.getItem("yumiSpeechHistoryV2")||"[]");
+ $("history").innerHTML=h.length
+ ? h.slice(0,10).map(x=>`<div style="padding:8px 0;border-bottom:1px solid #eee"><b>${x.date}</b>　Day ${x.day}｜${x.title}｜合計 ${x.total}秒</div>`).join("")
+ : "まだありません。";
+}
+
+$("clear").onclick=()=>{
+ if(confirm("履歴を消去しますか？")){
+   localStorage.removeItem("yumiSpeechHistoryV2");
+   history();
+ }
+};
+
+render();history();
+</script>
+</body>
+</html>
